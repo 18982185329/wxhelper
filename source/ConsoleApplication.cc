@@ -570,6 +570,38 @@ HMODULE GetDLLHandle(wchar_t* wDllName, DWORD dPid)
 	return result;
 }
 
+BOOL EnableDebugPrivilege() 
+{
+	HANDLE TokenHandle = NULL;
+	TOKEN_PRIVILEGES TokenPrivilege;
+
+	LUID uID;
+	if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &TokenHandle)) {
+		if (LookupPrivilegeValue(NULL, SE_DEBUG_NAME, &uID)) {
+			TokenPrivilege.PrivilegeCount = 1;
+			TokenPrivilege.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+			TokenPrivilege.Privileges[0].Luid = uID;
+			if (AdjustTokenPrivileges(TokenHandle, FALSE, &TokenPrivilege, sizeof(TOKEN_PRIVILEGES), NULL, NULL)) {
+				CloseHandle(TokenHandle);
+				TokenHandle = INVALID_HANDLE_VALUE;
+				return TRUE;
+			}
+			else
+				goto fail;
+
+		}
+		else
+			goto fail;
+	}
+	else
+		goto fail;
+
+fail:
+	CloseHandle(TokenHandle);
+	TokenHandle = INVALID_HANDLE_VALUE;
+	return FALSE;
+}
+
 
 static unsigned char GetProcAddressAsmCode[] = {
 	0x55,                         // push ebp;
@@ -614,44 +646,12 @@ LPVOID FillAsmCode(HANDLE handle) {
 
 }
 
-BOOL RemoteLibraryFunction(HANDLE hProcess, LPCSTR lpModuleName, LPCSTR lpProcName, LPVOID lpParameters, SIZE_T dwParamSize, PVOID* ppReturn)
-{
-	LPVOID lpRemoteParams = NULL;
-
-	LPVOID lpFunctionAddress = GetProcAddress(GetModuleHandleA(lpModuleName), lpProcName);
-	if (!lpFunctionAddress) lpFunctionAddress = GetProcAddress(LoadLibraryA(lpModuleName), lpProcName);
-	if (!lpFunctionAddress) goto ErrorHandler;
-
-	if (lpParameters)
-	{
-		lpRemoteParams = VirtualAllocEx(hProcess, NULL, dwParamSize, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-		if (!lpRemoteParams) goto ErrorHandler;
-
-		SIZE_T dwBytesWritten = 0;
-		BOOL result = WriteProcessMemory(hProcess, lpRemoteParams, lpParameters, dwParamSize, &dwBytesWritten);
-		if (!result || dwBytesWritten < 1) goto ErrorHandler;
-	}
-
-	HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)lpFunctionAddress, lpRemoteParams, NULL, NULL);
-	if (!hThread) goto ErrorHandler;
-
-	DWORD dwOut = 0;
-	while (GetExitCodeThread(hThread, &dwOut)) {
-		if (dwOut != STILL_ACTIVE) {
-			*ppReturn = (PVOID)dwOut;
-			break;
-		}
-	}
-
-	return TRUE;
-
-ErrorHandler:
-	if (lpRemoteParams) VirtualFreeEx(hProcess, lpRemoteParams, dwParamSize, MEM_RELEASE);
-	return FALSE;
-}
 
 int  InjectDllAndStartHttp(wchar_t* szPName, wchar_t* szDllPath, DWORD port)
 {
+	if(!EnableDebugPrivilege()){
+		return 0;
+	}
 	int result = 0;
 	HANDLE hRemoteThread = NULL;
 	LPTHREAD_START_ROUTINE lpSysLibAddr = NULL;
@@ -660,9 +660,9 @@ int  InjectDllAndStartHttp(wchar_t* szPName, wchar_t* szDllPath, DWORD port)
 	HANDLE hProcess;
 	unsigned int dwPid;
 	size_t ulDllLength;
-	wchar_t* dllName = L"wxhelper.dll";
+	wchar_t* dllName = (wchar_t*)L"wxhelper.dll";
 	size_t dllNameLen = wcslen(dllName) * 2 + 2;
-	char* funcName = "http_start";
+	char* funcName = (char* )"http_start";
 	size_t funcNameLen = strlen(funcName) + 1;
 
 	HANDLE  hStartHttp = NULL;
@@ -773,6 +773,9 @@ error:
 
 int  InjectDll(wchar_t* szPName, wchar_t* szDllPath)
 {
+	if(!EnableDebugPrivilege()){
+		return 0;
+	}
 	int result = 0;
 	HANDLE hRemoteThread;
 	LPTHREAD_START_ROUTINE lpSysLibAddr;
@@ -802,6 +805,9 @@ int  InjectDll(wchar_t* szPName, wchar_t* szDllPath)
 			CloseHandle(hRemoteThread);
 			CloseHandle(hProcess);
 			OutputDebugStringA("[DBG] dll inject success");
+			printf("dll inject success");
+			printf("dll path : %s ", szDllPath);
+			printf("dll path : %d ", dwPid);
 			result = 1;
 		}
 		else
@@ -917,7 +923,7 @@ int main(int argc, char** argv)
 	}
 
 	if (pid) {
-		FindHandles(pid, "_WeChat_App_Instance_Identity_Mutex_Name", TRUE, TRUE);
+		FindHandles(pid, (LPSTR)"_WeChat_App_Instance_Identity_Mutex_Name", TRUE, TRUE);
 	}
 
 	if (cInjectprogram[0] != 0 && cDllPath[0] != 0)
